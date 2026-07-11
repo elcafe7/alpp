@@ -927,4 +927,41 @@ def write_html(
     path = Path(path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(str(path), include_plotlyjs="cdn", full_html=True)
+
+    # Machine-readable label for CLI history / saved-chart gallery
+    try:
+        from .charts import meta_comment
+
+        ind_keys = [s.key() for s in indicators]
+        comment = meta_comment(
+            symbol=symbol,
+            name=asset.name,
+            timeframe=rng.label,
+            indicators=ind_keys,
+            compare=compare.symbol if compare else None,
+            chart_style=style,
+            change_display=change_display,
+        )
+        body = path.read_text(encoding="utf-8")
+        if "alpp-meta" not in body:
+            if body.lstrip().lower().startswith("<!doctype") or body.lstrip().lower().startswith(
+                "<html"
+            ):
+                # insert right after <head> if present
+                lower = body.lower()
+                idx = lower.find("<head")
+                if idx >= 0:
+                    gt = body.find(">", idx)
+                    if gt >= 0:
+                        body = body[: gt + 1] + "\n" + comment + body[gt + 1 :]
+                    else:
+                        body = comment + body
+                else:
+                    body = comment + body
+            else:
+                body = comment + body
+            path.write_text(body, encoding="utf-8")
+    except OSError:
+        pass
+
     return path

@@ -375,6 +375,7 @@ def prompt_ticker_live(
     *,
     message: str = "Ticker",
     default: str = "",
+    hint: str | None = None,
 ) -> str:
     """
     Interactive ticker entry with ajax-style completions while typing.
@@ -396,10 +397,17 @@ def prompt_ticker_live(
 
     completer = make_completer(index)
     updated = index.updated_at or "unknown"
+    dim = hint or f"type name or symbol · tab · {updated}"
+    # escape for prompt_toolkit HTML
+    dim_esc = (
+        dim.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
     result = prompt(
         HTML(
             f"<ansicyan><b>{message}</b></ansicyan> "
-            f"<ansibrightblack>(type name or symbol · tab · {updated})</ansibrightblack>: "
+            f"<ansibrightblack>({dim_esc})</ansibrightblack>: "
         ),
         completer=completer,
         complete_while_typing=True,

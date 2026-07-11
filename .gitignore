@@ -5,6 +5,17 @@ build/
 dist/
 .venv/
 venv/
+
+# generated charts (HTML exports)
 out/
+html/
+charts/
+*.html
+
+# generated symbol directory cache
 data/symbols.json
+data/
+
+# local config / history (lives in ~/.config/alpp, but just in case)
 .config/
+history.json

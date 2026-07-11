@@ -290,11 +290,26 @@ _PARAM_KINDS = {
 }
 
 
+def _split_indicator_list(raw: str) -> list[str]:
+    """Split 'sma:20,rsi,macd:12,26,9' without breaking multi-param keys."""
+    chunks = [p.strip() for p in raw.split(",")]
+    merged: list[str] = []
+    for chunk in chunks:
+        if not chunk:
+            continue
+        # bare numeric fragment → continue previous name:p1,p2,…
+        if chunk.isdigit() and merged and ":" in merged[-1]:
+            merged[-1] = f"{merged[-1]},{chunk}"
+        else:
+            merged.append(chunk)
+    return merged
+
+
 def parse_indicators(raw: str | None) -> list[IndicatorSpec]:
     if not raw:
         return []
     out: list[IndicatorSpec] = []
-    for part in raw.split(","):
+    for part in _split_indicator_list(raw):
         part = part.strip()
         if not part:
             continue
