@@ -1,6 +1,9 @@
+<img width="853" height="416" alt="Screenshot 2026-07-11 at 11 32 25 AM" src="https://github.com/user-attachments/assets/9b784554-4975-48dc-bd92-05104d711ef5" />
 # alpp
 
 Alpaca chart CLI with Rich UI, live ticker autocomplete, and HTML charts.
+
+
 
 ## Install
 
