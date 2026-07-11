@@ -1,7 +1,7 @@
 # alpp
 
 Alpaca chart CLI with Rich UI, live ticker autocomplete, and HTML charts.
--BYOK from Alpaca [https://alpaca.markets/]
+-BYOK from (Alpaca)[https://alpaca.markets/]
 
 
 ## Install
