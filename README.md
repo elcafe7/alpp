@@ -5,8 +5,10 @@ Alpaca chart CLI with Rich UI, live ticker autocomplete, and HTML charts.
 - BYOK from [Alpaca](https://alpaca.markets/)
 
 ## Screenies
+
 ### main
 <img width="488" height="93" alt="Screenshot 2026-07-11 at 12 07 28 PM" src="https://github.com/user-attachments/assets/7bd2ad6a-3758-4f2a-83d1-b8dd3e31c683" />
+
 ### adding a ticker (ajax-style load)
 <img width="780" height="173" alt="Screenshot 2026-07-11 at 12 07 37 PM" src="https://github.com/user-attachments/assets/39c81887-e233-413d-9971-825d54a590fa" />
      - grabs latest tickers from nasdaq/entire mkt ticker db ( 
