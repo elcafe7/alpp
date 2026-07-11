@@ -3,6 +3,7 @@
 Alpaca chart CLI with Rich UI, live ticker autocomplete, and HTML charts.
 
 - BYOK from [Alpaca](https://alpaca.markets/)
+- Charts + tech analysis of one or more tickers using the Alpaca api.
 
 ## Screenies
 
