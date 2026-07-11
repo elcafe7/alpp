@@ -52,13 +52,18 @@ pip install .
 
 That installs the `alpp` command and all dependencies.
 
+**Symbol directory:** the Homebrew install script **auto-fetches** Nasdaq’s public
+ticker lists into `~/alpp/data/symbols.json` (best-effort — FTP/network failure does
+**not** fail install). The first `alpp` run also tries if the cache is missing/stale.
+Manual refresh: `alpp symbols update`.
+
 ### Homebrew Python (macOS)
 
 If `python3` / `pip3` are from Homebrew (`/opt/homebrew/bin/python3`), use
 `python3 -m pip` and prefer `--user`.
 
 Install script (detects **Python X.Y** for PATH; uses the **published repo URL** —
-installers do not enter a GitHub username):
+installers do not enter a GitHub username). After pip, it pulls the Nasdaq list:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/elcafe7/alpp/main/scripts/install-homebrew.sh | bash
@@ -69,6 +74,7 @@ Or manually:
 ```bash
 python3 -m pip install --user git+https://github.com/elcafe7/alpp.git
 export PATH="$HOME/Library/Python/$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')/bin:$PATH"
+python3 -c 'from alpp.symbols import bootstrap_symbols; bootstrap_symbols()'  # optional
 alpp auth login
 ```
 
@@ -77,7 +83,6 @@ Clone + local install also works:
 ```bash
 git clone https://github.com/elcafe7/alpp.git && cd alpp && bash scripts/install-homebrew.sh
 ```
-
 ## Credentials
 
 Secrets go in the **system keychain** (via `keyring`). `~/.config/alpp/config.json`

@@ -193,6 +193,36 @@ def update_symbols(path: Path | None = None) -> dict:
     return catalog
 
 
+def bootstrap_symbols(
+    path: Path | None = None,
+    *,
+    force: bool = False,
+    timeout: int = 45,
+) -> dict | None:
+    """
+    Best-effort Nasdaq symbol fetch for install / first run.
+
+    Returns the catalog on success, or None if FTP/network fails (never raises).
+    Skips the network when a fresh cache already exists (unless force=True).
+    """
+    path = path or symbols_path()
+    if not force:
+        st = catalog_status(path)
+        if st["exists"] and st.get("count", 0) > 0:
+            age = st.get("age_hours")
+            # keep weekly cache; only fill if missing/stale
+            if age is not None and age <= 24 * 7:
+                return load_catalog(path)
+    try:
+        nasdaq_text = _fetch(NASDAQ_LISTED_URL, timeout=timeout)
+        other_text = _fetch(OTHER_LISTED_URL, timeout=timeout)
+        catalog = build_catalog(nasdaq_text, other_text)
+        save_catalog(catalog, path)
+        return catalog
+    except Exception:  # noqa: BLE001 — install must not fail on FTP
+        return None
+
+
 def catalog_status(path: Path | None = None) -> dict:
     path = path or symbols_path()
     cat = load_catalog(path)
@@ -223,7 +253,7 @@ def catalog_status(path: Path | None = None) -> dict:
 
 
 def ensure_catalog(max_age_hours: float = 24 * 7, force: bool = False) -> dict:
-    """Load catalog; refresh if missing or stale."""
+    """Load catalog; refresh if missing or stale (raises on hard failure)."""
     st = catalog_status()
     if (
         force
@@ -231,6 +261,11 @@ def ensure_catalog(max_age_hours: float = 24 * 7, force: bool = False) -> dict:
         or st["age_hours"] is None
         or st["age_hours"] > max_age_hours
     ):
+        # Prefer soft bootstrap first so offline/FTP issues don't kill the CLI
+        soft = bootstrap_symbols(force=force)
+        if soft is not None:
+            return soft
+        # Last resort: raise so `alpp symbols update` surfaces the error
         return update_symbols()
     cat = load_catalog()
     assert cat is not None

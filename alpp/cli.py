@@ -180,13 +180,19 @@ def default_html_path(symbol: str, tf: str) -> Path:
 
 
 def _load_index(force_refresh: bool = False) -> SymbolIndex | None:
+    """Load Nasdaq catalog; auto-fetch if missing/stale. Never hard-fails."""
     try:
         cat = ensure_catalog(max_age_hours=24 * 7, force=force_refresh)
         return SymbolIndex(cat)
     except Exception as exc:  # noqa: BLE001
-        console.print(f"[yellow]Symbol list unavailable:[/] {exc}")
-        return SymbolIndex.load()
-
+        # FTP/network glitch — fall back to any on-disk cache
+        cached = SymbolIndex.load()
+        if cached is None:
+            console.print(
+                f"[yellow]Symbol list unavailable:[/] {exc}  "
+                "[dim]· later: alpp symbols update[/]"
+            )
+        return cached
 
 def _print_recent_section(
     runs: list[HistoryRun],
@@ -1166,11 +1172,10 @@ def _main(argv: list[str] | None = None) -> int:
             f"[dim]· {creds.backend}[/]"
         )
 
-    if interactive or force:
-        with console.status("[cyan]Loading symbol directory…[/]", spinner="dots"):
-            index = _load_index(force_refresh=force)
-    else:
-        index = SymbolIndex.load()
+    # Always try catalog (downloads Nasdaq list on first run / when stale).
+    # FTP failure is non-fatal — ticker still works typed manually.
+    with console.status("[cyan]Loading symbol directory…[/]", spinner="dots"):
+        index = _load_index(force_refresh=force)
 
     if index:
         age = ""
@@ -1178,7 +1183,11 @@ def _main(argv: list[str] | None = None) -> int:
         if st.get("updated_at"):
             age = f"  ·  updated {st['updated_at']}"
         console.print(f"  [dim]directory[/]  {index.count:,} symbols{age}")
-
+    else:
+        console.print(
+            "  [dim]directory[/]  unavailable  "
+            "(run [bold]alpp symbols update[/] when online / FTP works)"
+        )
     # Simple rich UI: ticker ajax (or type "history" → tickers | charts)
     if args.ticker is None:
         picked = _prompt_ticker(index)

@@ -18,4 +18,6 @@ data/
 
 # local config / history (lives in ~/.config/alpp, but just in case)
 .config/
+history/
 history.json
+**/history.json
