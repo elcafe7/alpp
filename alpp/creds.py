@@ -310,16 +310,25 @@ def resolve_credentials(
     *,
     console: Console | None = None,
     allow_profile_prompt: bool = False,
+    ignore_env: bool = False,
 ) -> Credentials | None:
-    """Resolve credentials without setup prompts."""
-    env = _env_credentials()
-    if env:
-        return env
+    """Resolve credentials without setup prompts.
+
+    When ``ignore_env`` is True (or an explicit ``profile`` is given), skip
+    environment variable credentials and load the named keychain/config profile.
+    Explicit profile always wins over env so tools can force paper/live.
+    """
+    # Env only when no explicit profile and not forced off — env often pins paper.
+    use_env = not ignore_env and not (profile and str(profile).strip())
+    if use_env:
+        env = _env_credentials()
+        if env:
+            return env
 
     data = _load_config(console=console)
     chosen = (
-        profile
-        or _profile_from_env()
+        (str(profile).strip() if profile else "")
+        or (None if ignore_env else _profile_from_env())
         or str(data.get("default_profile") or "").strip()
         or "paper"
     ).strip()
@@ -341,11 +350,13 @@ def require_credentials(
     *,
     console: Console | None = None,
     allow_profile_prompt: bool = False,
+    ignore_env: bool = False,
 ) -> Credentials:
     creds = resolve_credentials(
         profile=profile,
         console=console,
         allow_profile_prompt=allow_profile_prompt,
+        ignore_env=ignore_env,
     )
     if creds:
         return creds
@@ -371,16 +382,22 @@ def ensure_credentials(
     profile: str | None = None,
     console: Console | None = None,
     interactive: bool | None = None,
+    ignore_env: bool = False,
 ) -> Credentials:
     """Return credentials; prompt for setup or live fallback on a TTY when missing."""
     if interactive is None:
         interactive = sys.stdin.isatty()
     console = console or Console()
 
+    # Explicit profile → keychain/config for that name (bypass env paper pin).
+    if profile and str(profile).strip():
+        ignore_env = True
+
     creds = resolve_credentials(
         profile=profile,
         console=console,
-        allow_profile_prompt=interactive,
+        allow_profile_prompt=interactive and not ignore_env,
+        ignore_env=ignore_env,
     )
     if creds:
         return creds
@@ -398,7 +415,9 @@ def ensure_credentials(
     )
     if Confirm.ask("Configure credentials now?", default=True, console=console):
         login_interactive(profile=profile or "paper", console=console)
-        creds = resolve_credentials(profile=profile, console=console)
+        creds = resolve_credentials(
+            profile=profile, console=console, ignore_env=bool(profile)
+        )
         if creds:
             return creds
     raise SystemExit(_missing_credentials_message(profile))

@@ -5,11 +5,15 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
+
+_NON_ALNUM = re.compile(r"[^A-Z0-9]+")
+_WORD_SPLIT = re.compile(r"[\s\-/,.&+]+")
 
 # Prefer FTP (HTTPS to this host often times out)
 NASDAQ_LISTED_URL = "ftp://ftp.nasdaqtrader.com/symboldirectory/nasdaqlisted.txt"
@@ -259,29 +263,86 @@ class SymbolIndex:
     def get(self, symbol: str) -> dict | None:
         return self._by.get(symbol.strip().upper())
 
-    def search(self, query: str, limit: int = 12) -> list[dict]:
-        q = query.strip().upper()
-        if not q:
+    def search(
+        self,
+        query: str,
+        limit: int = 12,
+        *,
+        include_test: bool = False,
+    ) -> list[dict]:
+        """Ranked ticker search by symbol and company name.
+
+        Scoring (high → low): exact symbol, compact match (BRKB→BRK.B),
+        symbol prefix, name word prefix, multi-token name AND, name substring,
+        symbol substring. Common stock slightly preferred over leveraged clutter.
+        """
+        raw = query.strip()
+        if not raw:
             return []
-        # prefix first, then substring
-        prefix = [self._by[s] for s in self._symbols if s.startswith(q)]
-        if len(prefix) >= limit:
-            return prefix[:limit]
-        seen = {r["symbol"] for r in prefix}
-        extra = [
-            self._by[s]
-            for s in self._symbols
-            if q in s and s not in seen
-        ]
-        # also match name
-        name_hits = [
-            row
-            for s, row in self._by.items()
-            if s not in seen
-            and s not in {r["symbol"] for r in extra}
-            and q.lower() in (row.get("name") or "").lower()
-        ]
-        return (prefix + extra + name_hits)[:limit]
+
+        q_up = raw.upper()
+        q_lo = raw.lower()
+        q_compact = _NON_ALNUM.sub("", q_up)
+        tokens = [t for t in _WORD_SPLIT.split(q_lo) if t and t not in ("inc", "corp", "the", "and", "of", "co")]
+
+        scored: list[tuple[float, str, dict]] = []
+        for sym, row in self._by.items():
+            if not include_test and row.get("test"):
+                continue
+            name = row.get("name") or ""
+            name_lo = name.lower()
+            sym_compact = _NON_ALNUM.sub("", sym)
+            score = 0.0
+
+            if sym == q_up:
+                score = 1000.0
+            elif q_compact and sym_compact == q_compact:
+                score = 980.0
+            elif sym.startswith(q_up):
+                score = 850.0 - min(len(sym), 40) * 0.5
+            elif q_compact and len(q_compact) >= 2 and sym_compact.startswith(q_compact):
+                score = 820.0 - min(len(sym_compact), 40) * 0.5
+            elif tokens and all(
+                any(w.startswith(tok) or tok in w for w in _WORD_SPLIT.split(name_lo))
+                for tok in tokens
+            ):
+                # all query tokens hit some name word (e.g. "advanced micro")
+                score = 700.0
+                if name_lo.startswith(tokens[0]):
+                    score += 40.0
+            elif q_lo and any(
+                w.startswith(q_lo) for w in _WORD_SPLIT.split(name_lo) if w
+            ):
+                score = 650.0
+            elif q_lo and q_lo in name_lo:
+                # earlier in name → better
+                score = 500.0 - min(name_lo.find(q_lo), 80) * 0.5
+            elif len(q_up) >= 2 and q_up in sym:
+                score = 350.0
+            elif q_compact and len(q_compact) >= 2 and q_compact in sym_compact:
+                score = 320.0
+            else:
+                continue
+
+            # Prefer plain equities / simple names over product soup
+            if re.search(r"\bCommon Stock\b|\bCommon Shares\b", name, re.I):
+                score += 25.0
+            elif re.search(r"\bETF\b|\bETN\b", name, re.I):
+                score -= 5.0
+            if re.search(
+                r"\b(2[Xx]|3[Xx]|-2[Xx]|-3[Xx]|Leveraged|Inverse|Bull|Bear|"
+                r"Daily Target|Option Income|WeeklyPay)\b",
+                name,
+                re.I,
+            ):
+                score -= 35.0
+            if row.get("etf") and score < 900:
+                score -= 3.0
+
+            scored.append((score, sym, row))
+
+        scored.sort(key=lambda t: (-t[0], t[1]))
+        return [row for _, _, row in scored[:limit]]
 
 
 def make_completer(index: SymbolIndex):
@@ -290,14 +351,15 @@ def make_completer(index: SymbolIndex):
 
     class TickerCompleter(Completer):
         def get_completions(self, document, complete_event):
-            text = document.text_before_cursor.strip().upper()
+            text = document.text_before_cursor.strip()
             if not text:
                 return
-            for row in index.search(text, limit=15):
+            for row in index.search(text, limit=20):
                 sym = row["symbol"]
-                name = (row.get("name") or "")[:60]
+                name = (row.get("name") or "")[:55]
                 ex = row.get("exchange") or ""
-                meta = f"{ex}  {name}".strip()
+                etf = " · ETF" if row.get("etf") else ""
+                meta = f"{ex}{etf}  {name}".strip()
                 yield Completion(
                     sym,
                     start_position=-len(document.text_before_cursor),
@@ -335,10 +397,14 @@ def prompt_ticker_live(
     completer = make_completer(index)
     updated = index.updated_at or "unknown"
     result = prompt(
-        HTML(f"<ansicyan><b>{message}</b></ansicyan> <ansibrightblack>(tab · list {updated})</ansibrightblack>: "),
+        HTML(
+            f"<ansicyan><b>{message}</b></ansicyan> "
+            f"<ansibrightblack>(type name or symbol · tab · {updated})</ansibrightblack>: "
+        ),
         completer=completer,
         complete_while_typing=True,
-        complete_style=CompleteStyle.MULTI_COLUMN,
+        complete_style=CompleteStyle.COLUMN,
         default=default,
     )
     return result.strip()
+

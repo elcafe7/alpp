@@ -415,6 +415,7 @@ def _add_price_trace(
     chart_style: str,
     *,
     change_display: str = "both",
+    show_in_legend: bool = True,
 ) -> None:
     """Primary price pane by chart style."""
     style = (chart_style or "candle").lower()
@@ -434,6 +435,7 @@ def _add_price_trace(
     c = plot_df["close"]
     x = plot_df["timestamp"]
 
+    legend_kw = dict(showlegend=show_in_legend)
     if style in ("candle", "fib"):
         fig.add_trace(
             go.Candlestick(
@@ -449,6 +451,7 @@ def _add_price_trace(
                 decreasing_fillcolor="#ef5350",
                 customdata=customdata,
                 hovertemplate=_ohlc_hovertemplate(change_display),
+                **legend_kw,
             ),
             row=1,
             col=1,
@@ -468,6 +471,7 @@ def _add_price_trace(
                 decreasing_fillcolor="#ef5350",
                 customdata=customdata,
                 hovertemplate=_ohlc_hovertemplate(change_display),
+                **legend_kw,
             ),
             row=1,
             col=1,
@@ -485,6 +489,7 @@ def _add_price_trace(
                 decreasing_line_color="#ef5350",
                 customdata=customdata,
                 hovertemplate=_ohlc_hovertemplate(change_display),
+                **legend_kw,
             ),
             row=1,
             col=1,
@@ -501,6 +506,7 @@ def _add_price_trace(
                 fillcolor="rgba(66,165,245,0.15)",
                 customdata=customdata,
                 hovertemplate=_price_hovertemplate(change_display),
+                **legend_kw,
             ),
             row=1,
             col=1,
@@ -516,6 +522,7 @@ def _add_price_trace(
                 marker=dict(size=4, color="#90caf9"),
                 customdata=customdata,
                 hovertemplate=_price_hovertemplate(change_display),
+                **legend_kw,
             ),
             row=1,
             col=1,
@@ -530,6 +537,7 @@ def _add_price_trace(
                 line=dict(color="#42a5f5", width=1.8),
                 customdata=customdata,
                 hovertemplate=_price_hovertemplate(change_display),
+                **legend_kw,
             ),
             row=1,
             col=1,
@@ -611,11 +619,15 @@ def write_html(
         rows += 1
 
     row_heights = [0.55] + [0.45 / max(rows - 1, 1)] * (rows - 1)
-    titles = [f"{symbol} · {asset.name} · {style_label}"]
+    overlays = overlay_columns(indicators)
+    hide_price_legend = has_rel
+    busy_chart = has_rel or bool(overlays) or bool(subs)
+
+    titles = [symbol if has_rel else f"{symbol} · {style_label}"]
     for s in subs:
         titles.append(s.label())
     if has_rel and compare:
-        titles.append(f"% rebased · {symbol} vs {compare.symbol}")
+        titles.append(f"{symbol} vs {compare.symbol}")
 
     fig = make_subplots(
         rows=rows,
@@ -626,10 +638,18 @@ def write_html(
         subplot_titles=titles,
     )
 
-    _add_price_trace(fig, go, df, symbol, style, change_display=change_display)
+    _add_price_trace(
+        fig,
+        go,
+        df,
+        symbol,
+        style,
+        change_display=change_display,
+        show_in_legend=not hide_price_legend,
+    )
 
     colors = ["#42a5f5", "#ab47bc", "#ffa726", "#66bb6a", "#26c6da"]
-    for i, col in enumerate(overlay_columns(indicators)):
+    for i, col in enumerate(overlays):
         if col not in df.columns:
             continue
         fig.add_trace(
@@ -637,7 +657,8 @@ def write_html(
                 x=df["timestamp"],
                 y=df[col],
                 mode="lines",
-                name=col.upper(),
+                name=col.replace("_", " ").upper(),
+                showlegend=not hide_price_legend,
                 line=dict(width=1.4, color=colors[i % len(colors)]),
             ),
             row=1,
@@ -656,6 +677,7 @@ def write_html(
                         y=df[col],
                         mode="lines",
                         name=col.upper(),
+                        showlegend=False,
                         line=dict(color="#7e57c2", width=1.5),
                     ),
                     row=row,
@@ -684,6 +706,7 @@ def write_html(
                         y=df[mcol],
                         mode="lines",
                         name="MACD",
+                        showlegend=False,
                         line=dict(color="#29b6f6", width=1.3),
                     ),
                     row=row,
@@ -695,6 +718,7 @@ def write_html(
                         y=df[scol],
                         mode="lines",
                         name="Signal",
+                        showlegend=False,
                         line=dict(color="#ff7043", width=1.2),
                     ),
                     row=row,
@@ -705,6 +729,7 @@ def write_html(
                         x=df["timestamp"],
                         y=df[hcol],
                         name="Hist",
+                        showlegend=False,
                         marker_color="#90a4ae",
                     ),
                     row=row,
@@ -719,6 +744,7 @@ def write_html(
                         y=df[kcol],
                         mode="lines",
                         name="%K",
+                        showlegend=False,
                         line=dict(color="#42a5f5", width=1.3),
                     ),
                     row=row,
@@ -730,6 +756,7 @@ def write_html(
                         y=df[dcol],
                         mode="lines",
                         name="%D",
+                        showlegend=False,
                         line=dict(color="#ffa726", width=1.2),
                     ),
                     row=row,
@@ -744,6 +771,7 @@ def write_html(
                         x=df["timestamp"],
                         y=df["volume_plot"],
                         name="Volume",
+                        showlegend=False,
                         marker_color="#546e7a",
                     ),
                     row=row,
@@ -757,6 +785,7 @@ def write_html(
                         y=df[vcol],
                         mode="lines",
                         name=vcol.upper(),
+                        showlegend=False,
                         line=dict(color="#ffee58", width=1.3),
                     ),
                     row=row,
@@ -777,6 +806,7 @@ def write_html(
                         y=df[col],
                         mode="lines",
                         name=col.upper(),
+                        showlegend=False,
                         line=dict(color="#26c6da", width=1.4),
                     ),
                     row=row,
@@ -790,7 +820,7 @@ def write_html(
                 x=rel["timestamp"],
                 y=rel["primary_pct"],
                 mode="lines",
-                name=f"{symbol} %",
+                name=symbol,
                 line=dict(color="#26a69a", width=1.6),
             ),
             row=row,
@@ -801,7 +831,7 @@ def write_html(
                 x=rel["timestamp"],
                 y=rel["compare_pct"],
                 mode="lines",
-                name=f"{compare.symbol} %",
+                name=compare.symbol,
                 line=dict(color="#42a5f5", width=1.6),
             ),
             row=row,
@@ -815,11 +845,13 @@ def write_html(
         compare_stats=compare_stats,
         compare_symbol=compare.symbol if compare else None,
     )
+    overlay_bit = ", ".join(c.replace("_", " ").upper() for c in overlays if c in df.columns)
     subtitle_parts = [
         p
         for p in (
             change_bit,
             f"last ${stats['last']:,.2f}",
+            overlay_bit if hide_price_legend and overlay_bit else "",
             rng.bar,
             style_label,
         )
@@ -827,7 +859,16 @@ def write_html(
     ]
     subtitle = " · ".join(subtitle_parts)
 
-    fig.update_layout(
+    if hide_price_legend:
+        legend_count = 2
+    else:
+        legend_count = (1 if not hide_price_legend else 0) + len(
+            [c for c in overlays if c in df.columns]
+        )
+    show_legend = legend_count > 1
+    legend_on_right = busy_chart
+
+    layout_kw: dict = dict(
         title=dict(
             text=f"{symbol} · {asset.name}<br><sup>{rng.label.upper()} · {subtitle}</sup>"
         ),
@@ -835,9 +876,51 @@ def write_html(
         hovermode="x unified",
         xaxis_rangeslider_visible=False,
         height=280 + 220 * rows,
-        margin=dict(l=50, r=30, t=90, b=40),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        margin=dict(l=50, r=120 if legend_on_right and show_legend else 40, t=80, b=40),
+        showlegend=show_legend,
     )
+    if show_legend:
+        if has_rel:
+            layout_kw["legend"] = dict(
+                orientation="v",
+                yanchor="middle",
+                y=0.35,
+                xanchor="left",
+                x=1.02,
+                font=dict(size=11),
+                bgcolor="rgba(17,17,17,0.88)",
+                bordercolor="#3a3a3a",
+                borderwidth=1,
+                itemsizing="constant",
+            )
+        elif legend_on_right:
+            layout_kw["legend"] = dict(
+                orientation="v",
+                yanchor="top",
+                y=0.98,
+                xanchor="left",
+                x=1.02,
+                font=dict(size=11),
+                bgcolor="rgba(17,17,17,0.88)",
+                bordercolor="#3a3a3a",
+                borderwidth=1,
+                itemsizing="constant",
+            )
+        else:
+            layout_kw["legend"] = dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                font=dict(size=11),
+                bgcolor="rgba(17,17,17,0.88)",
+                bordercolor="#3a3a3a",
+                borderwidth=1,
+                itemsizing="constant",
+            )
+
+    fig.update_layout(**layout_kw)
     fig.update_xaxes(showgrid=True, gridcolor="#333")
     fig.update_yaxes(showgrid=True, gridcolor="#333")
 
