@@ -15,7 +15,20 @@ Alpaca chart CLI with Rich UI, live ticker autocomplete, and HTML charts.
      - grabs latest tickers on initial load from:
           - NASDAQ: ftp://ftp.nasdaqtrader.com/symboldirectory/nasdaqlisted.txt
           - NYSE, Arca, etc: ftp://ftp.nasdaqtrader.com/symboldirectory/otherlisted.txt 
-### 
+### cross compare tickers (eg. VOO vs QQQ)
+<img width="859" height="423" alt="Screenshot 2026-07-11 at 12 07 52 PM" src="https://github.com/user-attachments/assets/91e3c869-b23b-466a-b95b-317726551b57" />
+
+### lots of custom specs....
+<img width="474" height="227" alt="Screenshot 2026-07-11 at 12 08 14 PM" src="https://github.com/user-attachments/assets/8aadb58d-dd64-4a5f-9794-4f8257997093" />
+<img width="765" height="284" alt="Screenshot 2026-07-11 at 12 08 27 PM" src="https://github.com/user-attachments/assets/d5841982-fd30-4e2d-bf0f-5b15b76db328" />
+<img width="488" height="208" alt="Screenshot 2026-07-11 at 12 09 04 PM" src="https://github.com/user-attachments/assets/ba71897b-5a53-4d1d-a5d8-1ef52b3e988d" />
+
+### chart export to html
+<img width="1254" height="704" alt="Screenshot 2026-07-11 at 12 09 27 PM" src="https://github.com/user-attachments/assets/c2ffe5ca-2d28-4d01-97ec-e692116943e8" />
+
+### remembers your previous tickers, and charts
+<img width="854" height="151" alt="Screenshot 2026-07-11 at 12 19 13 PM" src="https://github.com/user-attachments/assets/b7bec4bf-4635-4dbc-b08c-d47b889b611d" />
+<img width="871" height="266" alt="Screenshot 2026-07-11 at 12 19 28 PM" src="https://github.com/user-attachments/assets/04e19d53-4514-4ed9-9092-96721a65bb76" />
 
 
 ## Install
