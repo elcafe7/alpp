@@ -357,13 +357,17 @@ def _window_change_customdata(df: pd.DataFrame, change_display: str) -> list[str
     return lines
 
 
-def _ohlc_hovertemplate(change_display: str) -> str:
+def _delta_hover_label(change_display: str) -> str:
     mode = _normalize_change_mode(change_display)
-    delta_label = "Window Δ"
     if mode == "pct":
-        delta_label = "Window Δ %"
-    elif mode == "nominal":
-        delta_label = "Window P/L"
+        return "Window Δ %"
+    if mode == "nominal":
+        return "Window P/L $"
+    return "Window Δ % · $"
+
+
+def _ohlc_hovertemplate(change_display: str) -> str:
+    delta_label = _delta_hover_label(change_display)
     return (
         "%{x|%b %d, %Y %H:%M}<br>"
         "O %{open:,.2f}  H %{high:,.2f}  L %{low:,.2f}  C %{close:,.2f}<br>"
@@ -373,16 +377,20 @@ def _ohlc_hovertemplate(change_display: str) -> str:
 
 
 def _price_hovertemplate(change_display: str) -> str:
-    mode = _normalize_change_mode(change_display)
-    delta_label = "Window Δ"
-    if mode == "pct":
-        delta_label = "Window Δ %"
-    elif mode == "nominal":
-        delta_label = "Window P/L"
+    delta_label = _delta_hover_label(change_display)
     return (
         "%{x|%b %d, %Y %H:%M}<br>"
         "Price: %{y:,.2f}<br>"
         f"{delta_label}: %{{customdata[0]}}"
+        "<extra></extra>"
+    )
+
+
+def _rel_pct_hovertemplate() -> str:
+    """Relative compare pane is always percent-from-start (never $)."""
+    return (
+        "%{x|%b %d, %Y %H:%M}<br>"
+        "%{fullData.name}: %{y:+.2f}%"
         "<extra></extra>"
     )
 
@@ -416,8 +424,10 @@ def _add_price_trace(
     *,
     change_display: str = "both",
     show_in_legend: bool = True,
+    row: int = 1,
+    col: int = 1,
 ) -> None:
-    """Primary price pane by chart style."""
+    """Price pane by chart style (primary or compare ticker)."""
     style = (chart_style or "candle").lower()
     plot_df = df
     name = symbol
@@ -434,6 +444,7 @@ def _add_price_trace(
     l = plot_df["low"]
     c = plot_df["close"]
     x = plot_df["timestamp"]
+    rc = dict(row=row, col=col)
 
     legend_kw = dict(showlegend=show_in_legend)
     if style in ("candle", "fib"):
@@ -453,8 +464,7 @@ def _add_price_trace(
                 hovertemplate=_ohlc_hovertemplate(change_display),
                 **legend_kw,
             ),
-            row=1,
-            col=1,
+            **rc,
         )
     elif style in ("hollow", "fib_hollow", "empty", "empty_candle"):
         fig.add_trace(
@@ -473,8 +483,7 @@ def _add_price_trace(
                 hovertemplate=_ohlc_hovertemplate(change_display),
                 **legend_kw,
             ),
-            row=1,
-            col=1,
+            **rc,
         )
     elif style in ("bar", "ohlc"):
         fig.add_trace(
@@ -491,8 +500,7 @@ def _add_price_trace(
                 hovertemplate=_ohlc_hovertemplate(change_display),
                 **legend_kw,
             ),
-            row=1,
-            col=1,
+            **rc,
         )
     elif style == "area":
         fig.add_trace(
@@ -508,8 +516,7 @@ def _add_price_trace(
                 hovertemplate=_price_hovertemplate(change_display),
                 **legend_kw,
             ),
-            row=1,
-            col=1,
+            **rc,
         )
     elif style in ("markers", "line_markers"):
         fig.add_trace(
@@ -524,8 +531,7 @@ def _add_price_trace(
                 hovertemplate=_price_hovertemplate(change_display),
                 **legend_kw,
             ),
-            row=1,
-            col=1,
+            **rc,
         )
     else:  # line
         fig.add_trace(
@@ -539,24 +545,39 @@ def _add_price_trace(
                 hovertemplate=_price_hovertemplate(change_display),
                 **legend_kw,
             ),
-            row=1,
-            col=1,
+            **rc,
         )
 
     if style in ("fib", "fib_hollow"):
-        for price, lab, col in _fib_levels(df):
+        for price, lab, colr in _fib_levels(df):
             fig.add_hline(
                 y=price,
                 line_dash="dot",
-                line_color=col,
+                line_color=colr,
                 line_width=1,
                 annotation_text=lab,
                 annotation_position="right",
                 annotation_font_size=10,
-                annotation_font_color=col,
-                row=1,
-                col=1,
+                annotation_font_color=colr,
+                **rc,
             )
+
+
+def _stats_change_parts(stats: dict | None, mode: str) -> list[str]:
+    """Window change fragments for one series (pct / $ / both)."""
+    if not stats:
+        return []
+    mode = _normalize_change_mode(mode)
+    parts: list[str] = []
+    if mode in ("pct", "both"):
+        chg = stats.get("pct")
+        if chg is not None:
+            parts.append(_fmt_pct(float(chg)))
+    if mode in ("nominal", "both"):
+        nom = stats.get("nominal")
+        if nom is not None:
+            parts.append(_fmt_money(float(nom)))
+    return parts
 
 
 def format_change_label(
@@ -566,28 +587,14 @@ def format_change_label(
     compare_stats: dict | None = None,
     compare_symbol: str | None = None,
 ) -> str:
-    """Build window change text: pct | nominal | both."""
-    mode = (mode or "both").lower()
-    chg = stats.get("pct")
-    nom = stats.get("nominal")
-    parts: list[str] = []
-    if mode in ("pct", "percent", "%", "both"):
-        if chg is not None:
-            parts.append(_fmt_pct(float(chg)))
-    if mode in ("nominal", "dollar", "$", "both"):
-        if nom is not None:
-            parts.append(_fmt_money(float(nom)))
+    """Build window change text: pct | nominal | both (primary + optional vs)."""
+    parts = _stats_change_parts(stats, mode)
     label = "  ".join(parts) if parts else ""
-    if compare_stats and compare_symbol and mode in ("pct", "percent", "%", "both"):
-        cp = compare_stats.get("pct")
-        if cp is not None:
-            label = f"{label} · vs {compare_symbol} {_fmt_pct(float(cp))}".strip(" ·")
-    elif compare_stats and compare_symbol and mode in ("nominal", "dollar", "$"):
-        cn = compare_stats.get("nominal")
-        if cn is not None:
-            label = f"{label} · vs {compare_symbol} {_fmt_money(float(cn))}".strip(" ·")
+    if compare_stats and compare_symbol:
+        c_parts = _stats_change_parts(compare_stats, mode)
+        if c_parts:
+            label = f"{label} · vs {compare_symbol} {'  '.join(c_parts)}".strip(" ·")
     return label
-
 
 def write_html(
     path: Path,
@@ -613,27 +620,44 @@ def write_html(
     style = (chart_style or "candle").lower()
     style_label = style.replace("_", " ")
     subs = subpane_specs(indicators)
-    rows = 1 + len(subs)
     has_rel = compare is not None and rel is not None and not rel.empty
-    if has_rel:
-        rows += 1
+    has_compare_price = (
+        has_rel
+        and compare is not None
+        and compare_df is not None
+        and not compare_df.empty
+    )
 
-    row_heights = [0.55] + [0.45 / max(rows - 1, 1)] * (rows - 1)
+    # panes: primary · [indicator subs…] · [compare price] · [relative %]
+    weights: list[float] = [3.2]
+    for _ in subs:
+        weights.append(1.15)
+    if has_compare_price:
+        weights.append(2.6)
+    if has_rel:
+        weights.append(2.0)
+    total_w = sum(weights) or 1.0
+    row_heights = [w / total_w for w in weights]
+    rows = len(weights)
+
     overlays = overlay_columns(indicators)
+    # Relative pane owns the dual-series legend; price panes stay clean
     hide_price_legend = has_rel
     busy_chart = has_rel or bool(overlays) or bool(subs)
 
-    titles = [symbol if has_rel else f"{symbol} · {style_label}"]
+    titles = [f"{symbol} · {style_label}"]
     for s in subs:
         titles.append(s.label())
-    if has_rel and compare:
-        titles.append(f"{symbol} vs {compare.symbol}")
+    if has_compare_price and compare is not None:
+        titles.append(f"{compare.symbol} · {style_label}")
+    if has_rel and compare is not None:
+        titles.append(f"% change · {symbol} vs {compare.symbol}")
 
     fig = make_subplots(
         rows=rows,
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.04,
+        vertical_spacing=0.045,
         row_heights=row_heights,
         subplot_titles=titles,
     )
@@ -647,7 +671,6 @@ def write_html(
         change_display=change_display,
         show_in_legend=not hide_price_legend,
     )
-
     colors = ["#42a5f5", "#ab47bc", "#ffa726", "#66bb6a", "#26c6da"]
     for i, col in enumerate(overlays):
         if col not in df.columns:
@@ -814,14 +837,37 @@ def write_html(
                 )
         row += 1
 
+    # Compare ticker on its own price pane (same style + %/$ hover as primary)
+    if has_compare_price and compare is not None and compare_df is not None:
+        _add_price_trace(
+            fig,
+            go,
+            compare_df,
+            compare.symbol,
+            style,
+            change_display=change_display,
+            show_in_legend=False,
+            row=row,
+            col=1,
+        )
+        fig.update_yaxes(
+            title_text=f"{compare.symbol} $",
+            row=row,
+            col=1,
+            title_font=dict(size=11),
+        )
+        row += 1
+    # Relative performance is always percent-from-start (apples-to-apples)
     if has_rel and compare is not None:
+        rel_hover = _rel_pct_hovertemplate()
         fig.add_trace(
             go.Scatter(
                 x=rel["timestamp"],
                 y=rel["primary_pct"],
                 mode="lines",
-                name=symbol,
+                name=f"{symbol} %",
                 line=dict(color="#26a69a", width=1.6),
+                hovertemplate=rel_hover,
             ),
             row=row,
             col=1,
@@ -831,13 +877,24 @@ def write_html(
                 x=rel["timestamp"],
                 y=rel["compare_pct"],
                 mode="lines",
-                name=compare.symbol,
+                name=f"{compare.symbol} %",
                 line=dict(color="#42a5f5", width=1.6),
+                hovertemplate=rel_hover,
             ),
             row=row,
             col=1,
         )
         fig.add_hline(y=0, line_dash="dot", line_color="#666", row=row, col=1)
+        fig.update_yaxes(
+            title_text="% from start",
+            row=row,
+            col=1,
+            title_font=dict(size=11),
+            ticksuffix="%",
+        )
+
+    # Primary price pane y label
+    fig.update_yaxes(title_text=f"{symbol} $", row=1, col=1, title_font=dict(size=11))
 
     change_bit = format_change_label(
         stats,
@@ -846,11 +903,14 @@ def write_html(
         compare_symbol=compare.symbol if compare else None,
     )
     overlay_bit = ", ".join(c.replace("_", " ").upper() for c in overlays if c in df.columns)
+    last_bits = [f"{symbol} ${stats['last']:,.2f}"]
+    if compare_stats and compare is not None and compare_stats.get("last") is not None:
+        last_bits.append(f"{compare.symbol} ${compare_stats['last']:,.2f}")
     subtitle_parts = [
         p
         for p in (
             change_bit,
-            f"last ${stats['last']:,.2f}",
+            " · ".join(last_bits),
             overlay_bit if hide_price_legend and overlay_bit else "",
             rng.bar,
             style_label,
@@ -860,14 +920,13 @@ def write_html(
     subtitle = " · ".join(subtitle_parts)
 
     if hide_price_legend:
-        legend_count = 2
+        legend_count = 2  # dual % series on relative pane
     else:
         legend_count = (1 if not hide_price_legend else 0) + len(
             [c for c in overlays if c in df.columns]
         )
     show_legend = legend_count > 1
     legend_on_right = busy_chart
-
     layout_kw: dict = dict(
         title=dict(
             text=f"{symbol} · {asset.name}<br><sup>{rng.label.upper()} · {subtitle}</sup>"
@@ -881,10 +940,11 @@ def write_html(
     )
     if show_legend:
         if has_rel:
+            # sit beside the bottom relative-% pane
             layout_kw["legend"] = dict(
                 orientation="v",
-                yanchor="middle",
-                y=0.35,
+                yanchor="bottom",
+                y=0.02,
                 xanchor="left",
                 x=1.02,
                 font=dict(size=11),
@@ -892,6 +952,7 @@ def write_html(
                 bordercolor="#3a3a3a",
                 borderwidth=1,
                 itemsizing="constant",
+                title=dict(text="% change", font=dict(size=11)),
             )
         elif legend_on_right:
             layout_kw["legend"] = dict(

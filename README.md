@@ -111,22 +111,27 @@ Free paper keys: https://app.alpaca.markets/paper/dashboard/overview
 ```bash
 alpp symbols update     # fetch nasdaqlisted + otherlisted → ~/alpp/data/symbols.json
 alpp symbols status
-alpp                    # interactive: recent history + saved charts + ticker complete
+alpp                    # interactive rich UI (ticker complete)
 alpp AAPL ytd --ind sma:20,rsi --vs SPY --html --open
-alpp AAPL ytd -p paper  # explicit profile
-alpp history            # recent tickers / overlay sets (~/.config/alpp/history.json)
-alpp charts             # browse HTML in ~/alpp/out (and ./out) with parsed labels
-alpp charts open 1      # open newest saved chart in browser
+alpp AAPL ytd -p paper
+alpp history            # same as typing history in interactive
+alpp history tickers
+alpp history charts
+alpp history charts open 1
+alpp history charts regenerate 1
 ```
 
-### History & saved charts
+### History command (ajax)
 
-Each session records the **ticker**, **compare**, **timeframe**, and **indicators** so the
-next `alpp` launch can re-run them (`#1`, `#2`, … at the ticker prompt).
+Start is the **simple ticker prompt** (no history preload). Type a symbol for live
+directory complete, or type **`history`** — routes appear below as you type:
 
-HTML charts written to `~/alpp/out/` (or `./out`) show up under **saved charts**. The CLI
-reads titles natively (`SYMBOL · … · YTD · SMA 20 · vs SPY`) and, for new files, an
-`<!-- alpp-meta: … -->` tag. Shortcuts: **`sN`** open chart N, **`rN`** re-run that setup.
+| Route | What |
+|-------|------|
+| **history › tickers** | Prior sessions (lazy-loaded) — pick one to re-run |
+| **history › charts** | Saved HTML in `~/alpp/out` — then **existing** (open file) or **regenerate** (same params, fresh data) |
+
+History lists load only after you enter the command. New HTML embeds `<!-- alpp-meta: … -->`.
 
 Symbol cache is a single **JSON** file (not SQL): easy to inspect, ~one weekly refresh,
 prefix search is fine for ~10–15k tickers. Includes `updated_at` plus each source’s

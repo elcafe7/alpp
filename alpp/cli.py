@@ -16,7 +16,7 @@ from rich.table import Table
 
 from . import __version__
 from .chart_picker import DEFAULT_CHART, normalize_chart, prompt_chart_style
-from .charts import ChartInfo, default_chart_dirs, parse_chart_file, scan_chart_dirs
+from .charts import ChartInfo, default_chart_dirs, scan_chart_dirs
 from .creds import (
     ensure_credentials,
     import_alpaca_profiles,
@@ -50,6 +50,8 @@ from .symbols import (
     SymbolIndex,
     catalog_status,
     ensure_catalog,
+    make_command_completer,
+    make_list_completer,
     prompt_ticker_live,
     symbols_path,
     update_symbols,
@@ -85,30 +87,20 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:
-  alpp                              # interactive (history · saved charts · ticker)
+  alpp                              # interactive rich UI (ticker complete)
   alpp AAPL ytd
   alpp AAPL ytd --ind sma:20,rsi --vs SPY --html --open
-  alpp AAPL ytd --html --chart hollow
-  alpp history                      # recent tickers + overlay sets
-  alpp charts                       # browse ~/alpp/out HTML (parsed labels)
-  alpp charts open 1                # open newest saved chart
-  alpp symbols update               # refresh nasdaqlisted + otherlisted → JSON
-  alpp symbols status
-  alpp auth login                   # save keys to system keychain
-  alpp auth import-alpaca           # one-time import from Alpaca CLI yaml
-  alpp auth status
+  alpp history tickers
+  alpp history charts
+  alpp symbols update
+  alpp auth login
 
 timeframes (interactive): ↑↓/jk · 0-9 hotkeys · or type ytd/1d/…
-  1=1d 2=5d 3=1m 4=3m 5=6m 6=ytd 7=1y 8=2y 9=5y 0=max
-compare: after ticker confirm · Compare vs another ticker? y/n · or --vs SPY
-indicators: prompt Overlay indicators? y/n · Miller picker if y · or --ind sma:20,rsi
-chart styles (--html): ↑↓ · 1-9 · type  candle|hollow|bar|line|area|heikin|fib|…
-HTML change label: pct | nominal | both  (or --change)
+compare / indicators / chart styles: prompts on TTY (or flags)
 
-interactive shortcuts (at ticker prompt):
-  #N     re-run recent history entry N
-  sN     open saved HTML chart N
-  rN     re-run setup parsed from saved chart N
+interactive: type a ticker (ajax) or type "history" for:
+  history › tickers   prior sessions — re-run
+  history › charts    saved HTML — existing (open) or regenerate (fresh data)
 """,
     )
     p.add_argument("ticker", nargs="?", default=None, help="Symbol, e.g. AAPL")
@@ -196,10 +188,16 @@ def _load_index(force_refresh: bool = False) -> SymbolIndex | None:
         return SymbolIndex.load()
 
 
-def _print_recent_section(runs: list[HistoryRun], *, limit: int = 8) -> None:
+def _print_recent_section(
+    runs: list[HistoryRun],
+    *,
+    limit: int = 8,
+    show_back: bool = False,
+) -> None:
     if not runs:
         console.print(
-            "  [dim]recent[/]  (empty — sessions are remembered after each chart)"
+            "  [dim]history › tickers[/]  "
+            "(empty — sessions are remembered after each chart)"
         )
         return
     tbl = Table(
@@ -217,20 +215,27 @@ def _print_recent_section(runs: list[HistoryRun], *, limit: int = 8) -> None:
         if len(when) > 16:
             when = when[:16]
         tbl.add_row(str(i), run.label(), when)
+    if show_back:
+        tbl.add_row("0", "[dim]← back (Enter)[/]", "")
     console.print(
         Panel(
             tbl,
-            title="[bold]recent[/]  [dim]#N re-run[/]",
+            title="[bold]history › tickers[/]",
             border_style="cyan",
             padding=(0, 1),
         )
     )
 
 
-def _print_saved_charts_section(charts: list[ChartInfo], *, limit: int = 10) -> None:
+def _print_saved_charts_section(
+    charts: list[ChartInfo],
+    *,
+    limit: int = 10,
+    show_back: bool = False,
+) -> None:
     if not charts:
         dirs = " · ".join(str(d) for d in default_chart_dirs()[:2])
-        console.print(f"  [dim]saved charts[/]  (none in {dirs})")
+        console.print(f"  [dim]history › charts[/]  (none in {dirs})")
         return
     tbl = Table(
         show_header=True,
@@ -245,14 +250,12 @@ def _print_saved_charts_section(charts: list[ChartInfo], *, limit: int = 10) -> 
     tbl.add_column("file", style="dim", overflow="ellipsis", max_width=28)
     for i, ch in enumerate(charts[:limit], 1):
         tbl.add_row(str(i), ch.label(), ch.age_label(), ch.path.name)
-    roots = sorted({str(c.path.parent) for c in charts[:limit]})
-    subtitle = " · ".join(roots[:2])
-    if len(roots) > 2:
-        subtitle += f" · +{len(roots) - 2}"
+    if show_back:
+        tbl.add_row("0", "[dim]← back (Enter)[/]", "", "")
     console.print(
         Panel(
             tbl,
-            title=f"[bold]saved charts[/]  [dim]sN open · rN re-run · {subtitle}[/]",
+            title="[bold]history › charts[/]",
             border_style="green",
             padding=(0, 1),
         )
@@ -285,97 +288,239 @@ def _seed_from_chart(ch: ChartInfo, *, open_only: bool = False) -> SessionSeed:
     )
 
 
-def _parse_start_choice(
-    raw: str,
-    runs: list[HistoryRun],
-    charts: list[ChartInfo],
-) -> SessionSeed | str | None:
+def _is_history_command(raw: str) -> bool:
+    t = raw.strip().lower().replace("›", ">").replace(">", " ")
+    t = re.sub(r"\s+", " ", t).strip()
+    return t == "history" or t.startswith("history ")
+
+
+def _history_route(raw: str) -> str | None:
+    """Return 'tickers', 'charts', or None if only 'history'."""
+    t = raw.strip().lower().replace("›", " ").replace(">", " ")
+    t = re.sub(r"\s+", " ", t).strip()
+    if t in ("history tickers", "history ticker", "history sessions"):
+        return "tickers"
+    if t in ("history charts", "history chart", "history html"):
+        return "charts"
+    if t == "history":
+        return None
+    # "history › tickers" already normalized
+    if "ticker" in t:
+        return "tickers"
+    if "chart" in t or "html" in t:
+        return "charts"
+    return None
+
+
+def _prompt_ajax(
+    message: str,
+    completer,
+    *,
+    hint: str,
+    default: str = "",
+) -> str:
+    return prompt_ticker_live(
+        None,
+        message=message,
+        default=default,
+        hint=hint,
+        completer=completer,
+    )
+
+
+def _history_pick_tickers() -> SessionSeed | None:
     """
-    Return SessionSeed for history/chart pick, bare ticker string, or None if empty.
+    Load previous ticker sessions immediately and pick one to re-run.
+    No extra filter step — list is shown; user enters a number (default #1).
     """
-    text = raw.strip()
-    if not text:
+    runs = list_runs(limit=40)
+    if not runs:
+        console.print(
+            "  [dim]history › tickers[/]  empty — nothing recorded yet"
+        )
         return None
 
-    # #3 or 3 → history (prefer # form; bare digit only if no ticker-like)
-    m = re.fullmatch(r"#?\s*(\d+)", text)
-    if m and (text.startswith("#") or text.isdigit()):
-        n = int(m.group(1))
-        if 1 <= n <= len(runs):
-            return _seed_from_run(runs[n - 1])
-        raise SystemExit(f"No recent entry #{n} (have {len(runs)})")
+    # Show full list right away (this is the load)
+    console.print()
+    _print_recent_section(runs, limit=40, show_back=True)
+    console.print()
 
-    # s3 / open 3
-    m = re.fullmatch(r"(?:s|S|open)\s*(\d+)", text)
-    if m:
-        n = int(m.group(1))
-        if 1 <= n <= len(charts):
-            return _seed_from_chart(charts[n - 1], open_only=True)
-        raise SystemExit(f"No saved chart s{n} (have {len(charts)})")
+    while True:
+        # default 0 → Enter means back
+        raw = Prompt.ask(
+            "[bold cyan]history › tickers[/]  re-run #",
+            default="0",
+        ).strip()
+        if not raw or raw.lower() in ("0", "b", "back", "q", "esc"):
+            return None
+        m = re.match(r"#?\s*(\d+)", raw)
+        if m:
+            n = int(m.group(1))
+            if n == 0:
+                return None
+            if 1 <= n <= len(runs):
+                seed = _seed_from_run(runs[n - 1])
+                console.print(f"  [dim]replay[/]  {seed.from_label}")
+                return seed
+            console.print(
+                f"[yellow]No #{n} — type 1–{len(runs)}, or Enter back[/]"
+            )
+            continue
+        # also accept exact symbol match → most recent run for that ticker
+        want = raw.upper()
+        for r in runs:
+            if r.symbol == want or (r.compare and r.compare == want):
+                seed = _seed_from_run(r)
+                console.print(f"  [dim]replay[/]  {seed.from_label}")
+                return seed
+        console.print(
+            f"[yellow]Type 1–{len(runs)} to re-run, or Enter/0 back[/]"
+        )
 
-    # r3 re-run from saved chart labels
-    m = re.fullmatch(r"(?:r|R|rerun)\s*(\d+)", text)
-    if m:
-        n = int(m.group(1))
-        if 1 <= n <= len(charts):
-            return _seed_from_chart(charts[n - 1], open_only=False)
-        raise SystemExit(f"No saved chart r{n} (have {len(charts)})")
+def _history_pick_charts() -> SessionSeed | None:
+    """
+    Load saved HTML charts immediately and pick one by #.
+    No extra filter step — then existing (open) vs regenerate (fresh data).
+    """
+    charts = scan_chart_dirs(limit=40)
+    if not charts:
+        console.print("  [dim]history › charts[/]  no HTML in out/")
+        for d in default_chart_dirs()[:3]:
+            console.print(f"    [dim]· {d}[/]")
+        return None
 
-    return text
+    # Show full list right away (this is the load)
+    console.print()
+    _print_saved_charts_section(charts, limit=40, show_back=True)
+    console.print()
+
+    ch: ChartInfo | None = None
+    while ch is None:
+        # default 0 → Enter means back
+        raw = Prompt.ask(
+            "[bold cyan]history › charts[/]  pick #",
+            default="0",
+        ).strip()
+        if not raw or raw.lower() in ("0", "b", "back", "q", "esc"):
+            return None
+        m = re.match(r"#?\s*(\d+)", raw)
+        if m:
+            n = int(m.group(1))
+            if n == 0:
+                return None
+            if 1 <= n <= len(charts):
+                ch = charts[n - 1]
+                break
+            console.print(
+                f"[yellow]No #{n} — type 1–{len(charts)}, or Enter back[/]"
+            )
+            continue
+        # symbol / label shortcut → first matching chart
+        want = raw.upper()
+        for c in charts:
+            if c.symbol == want or want in c.label().upper():
+                ch = c
+                break
+        if ch is None:
+            console.print(
+                f"[yellow]Type 1–{len(charts)} to pick, or Enter/0 back[/]"
+            )
+
+    assert ch is not None
+    console.print(f"  [dim]chart[/]  {ch.label()}")
+    console.print(f"  [dim]file[/]   {ch.path.name}")
+
+    # existing (open HTML) vs regenerate (same params, fresh data)
+    while True:
+        raw = Prompt.ask(
+            "[bold cyan]history › charts[/]  "
+            "[1] existing  ·  [2] regenerate  ·  [0] back",
+            default="0",
+            show_choices=False,
+        ).strip().lower()
+        if not raw or raw in ("0", "b", "back", "q", "esc"):
+            # re-show chart list
+            return _history_pick_charts()
+        if raw in ("1", "existing", "e", "open", "view"):
+            seed = _seed_from_chart(ch, open_only=True)
+            console.print(f"  [bold]open[/]  {seed.from_label}")
+            return seed
+        if raw in ("2", "regenerate", "r", "regen", "replay", "rerun"):
+            seed = _seed_from_chart(ch, open_only=False)
+            console.print(f"  [dim]regenerate[/]  {seed.from_label}")
+            return seed
+        console.print(
+            "[yellow]Type [bold]1[/] existing, [bold]2[/] regenerate, "
+            "or Enter/0 back[/]"
+        )
+
+
+def _run_history_command(raw: str) -> SessionSeed | None:
+    """Dispatch history › tickers | history › charts (lazy load)."""
+    route = _history_route(raw)
+    if route is None:
+        # typed bare "history" — pick route via ajax
+        route_items = [
+            ("history › tickers", "prior sessions · re-run overlays"),
+            ("history › charts", "saved HTML · existing or regenerate"),
+        ]
+        raw2 = _prompt_ajax(
+            "history",
+            make_list_completer(route_items),
+            hint="tickers · charts · tab",
+        )
+        if not raw2:
+            return None
+        route = _history_route(
+            raw2 if raw2.lower().startswith("history") else f"history {raw2}"
+        )
+        if route is None:
+            low = raw2.lower()
+            if "ticker" in low:
+                route = "tickers"
+            elif "chart" in low or "html" in low:
+                route = "charts"
+    if route == "tickers":
+        return _history_pick_tickers()
+    if route == "charts":
+        return _history_pick_charts()
+    console.print("[yellow]history › tickers  or  history › charts[/]")
+    return None
 
 
 def _prompt_ticker(
     index: SymbolIndex | None,
     *,
-    runs: list[HistoryRun] | None = None,
-    charts: list[ChartInfo] | None = None,
     default: str = "",
 ) -> str | SessionSeed:
-    """Prompt for ticker; also accepts #N / sN / rN when history sections shown."""
-    runs = runs or []
-    charts = charts or []
-    hint_bits = []
-    if runs:
-        hint_bits.append("# recent")
-    if charts:
-        hint_bits.append("sN open · rN re-run")
-    msg = "Ticker"
-    if hint_bits:
-        # shown via prompt_ticker_live dim text; keep message short
-        pass
+    """
+    Simple rich ticker prompt (original UX) + optional history command.
 
-    hint = "type name or symbol · tab"
-    if runs:
-        hint += " · #N recent"
-    if charts:
-        hint += " · sN open · rN re-run"
+    Type a symbol (ajax directory) or type "history" for:
+      history › tickers | history › charts
+    """
+    completer = make_command_completer(index)
     while True:
         raw = prompt_ticker_live(
             index,
-            message=msg,
+            message="Ticker",
             default=default,
-            hint=hint,
+            hint="type name or symbol · tab · or history",
+            completer=completer,
         )
         if not raw and default:
             raw = default
         if not raw:
-            if runs or charts:
-                console.print(
-                    "[yellow]Type a symbol, [bold]#N[/] for recent, "
-                    "[bold]sN[/] to open a chart, or [bold]rN[/] to re-run one[/]"
-                )
-            else:
-                console.print("[yellow]Enter a symbol, e.g. AAPL (type to filter)[/]")
+            console.print(
+                "[yellow]Enter a symbol (e.g. AAPL) or type [bold]history[/][/]"
+            )
             continue
-        try:
-            choice = _parse_start_choice(raw, runs, charts)
-        except SystemExit as exc:
-            console.print(f"[red]{exc}[/]")
+        if _is_history_command(raw):
+            seed = _run_history_command(raw)
+            if seed is not None:
+                return seed
             continue
-        if choice is None:
-            continue
-        return choice
-
+        return raw.strip()
 
 def _prompt_timeframe(default: str = "ytd") -> str:
     """Type, arrow-nav, or 0-9 hotkeys."""
@@ -529,51 +674,78 @@ def cmd_symbols(argv: list[str]) -> int:
 
 
 def cmd_history(argv: list[str]) -> int:
-    """alpp history [list|clear|path]"""
+    """alpp history [tickers|charts|clear|path] — History › tickers | HTML charts."""
     print_banner()
-    sub = argv[0] if argv else "list"
+    sub = (argv[0] if argv else "").strip().lower()
+    rest = argv[1:]
+
     if sub in ("-h", "--help", "help"):
         console.print(
-            "Usage: [bold]alpp history[/] | [bold]clear[/] | [bold]path[/]\n"
-            "  list   recent tickers + indicator sets (default)\n"
-            "  clear  wipe ~/.config/alpp/history.json\n"
-            "  path   print history file path"
+            "Usage:\n"
+            "  [bold]alpp history[/]                 both sections (tickers + HTML)\n"
+            "  [bold]alpp history tickers[/]         History › tickers\n"
+            "  [bold]alpp history charts[/]          History › HTML charts\n"
+            "  [bold]alpp history charts open N[/]\n"
+            "  [bold]alpp history charts rerun N[/]\n"
+            "  [bold]alpp history charts path[/]\n"
+            "  [bold]alpp history clear[/]           wipe session history file\n"
+            "  [bold]alpp history path[/]"
         )
         return 0
-    if sub in ("path", "file"):
+
+    if sub in ("path", "file") and not rest:
         console.print(str(history_path()))
         return 0
+
     if sub in ("clear", "reset", "wipe"):
-        if not Confirm.ask("Clear chart history?", default=False):
+        if not Confirm.ask("Clear ticker session history?", default=False):
             return 0
         clear_history()
-        console.print("[green]History cleared[/]")
+        console.print("[green]History › tickers cleared[/]")
         return 0
-    if sub not in ("list", "ls", "show", "status"):
-        console.print(f"[red]Unknown history subcommand:[/] {sub}")
-        return 2
 
-    runs = list_runs(limit=20)
-    ticks = recent_tickers(limit=15)
-    _print_recent_section(runs, limit=20)
-    if ticks:
-        console.print(
-            f"  [dim]tickers[/]  {', '.join(f'[bold]{t}[/]' for t in ticks)}"
-        )
-    console.print(f"  [dim]file[/]     {history_path()}")
-    return 0
+    # Interactive history when bare `alpp history` on TTY
+    if not sub:
+        if sys.stdin.isatty():
+            seed = _run_history_command("history")
+            if seed is None:
+                return 0
+            return _run_seeded_session(seed, profile=None)
+        sub = "tickers"
+
+    # ── History › tickers ──────────────────────────────────────────
+    if sub in ("tickers", "ticker", "sessions", "runs", "list", "ls", "show"):
+        if sys.stdin.isatty() and sub in ("tickers", "ticker", "sessions", "runs"):
+            seed = _history_pick_tickers()
+            if seed is None:
+                return 0
+            return _run_seeded_session(seed, profile=None)
+        runs = list_runs(limit=25)
+        ticks = recent_tickers(limit=15)
+        _print_recent_section(runs, limit=25)
+        if ticks:
+            console.print(
+                f"  [dim]symbols[/]  {', '.join(f'[bold]{t}[/]' for t in ticks)}"
+            )
+        console.print(f"  [dim]file[/]     {history_path()}")
+        return 0
+
+    # ── History › charts ───────────────────────────────────────────
+    if sub in ("charts", "chart", "html", "gallery", "out"):
+        return _cmd_history_charts(rest)
+
+    console.print(f"[red]Unknown history subcommand:[/] {sub}")
+    console.print("Use: alpp history tickers | charts | clear | path")
+    return 2
 
 
-def cmd_charts(argv: list[str]) -> int:
-    """alpp charts [list|open N|path]"""
-    print_banner()
-    sub = argv[0] if argv else "list"
+def _cmd_history_charts(argv: list[str]) -> int:
+    """alpp history charts [list|open N|regenerate N|path]"""
+    sub = (argv[0] if argv else "").strip().lower()
     if sub in ("-h", "--help", "help"):
         console.print(
-            "Usage: [bold]alpp charts[/] | [bold]open N[/] | [bold]path[/]\n"
-            "  list     scan HTML dirs and show parsed labels (default)\n"
-            "  open N   open saved chart #N in browser\n"
-            "  path     print chart directories"
+            "Usage: [bold]alpp history charts[/] | [bold]open N[/] | "
+            "[bold]regenerate N[/] | [bold]path[/]"
         )
         return 0
     if sub in ("path", "dirs", "dir"):
@@ -583,14 +755,24 @@ def cmd_charts(argv: list[str]) -> int:
             console.print(f"  {mark} {d}  [dim]({n} html)[/]")
         return 0
 
+    # Interactive: pick chart → existing | regenerate
+    if not sub and sys.stdin.isatty():
+        seed = _history_pick_charts()
+        if seed is None:
+            return 0
+        return _run_seeded_session(seed, profile=None)
+
     charts = scan_chart_dirs(limit=40)
-    if sub in ("open", "o", "view") or (sub.isdigit() and len(argv) == 1):
+
+    if sub in ("open", "o", "view", "existing") or (
+        sub.isdigit() and len(argv) == 1
+    ):
         if sub.isdigit():
             n = int(sub)
         elif len(argv) >= 2 and argv[1].isdigit():
             n = int(argv[1])
         else:
-            raise SystemExit("Usage: alpp charts open N")
+            raise SystemExit("Usage: alpp history charts open N")
         if not charts or n < 1 or n > len(charts):
             raise SystemExit(f"No chart #{n} (have {len(charts)})")
         ch = charts[n - 1]
@@ -599,17 +781,60 @@ def cmd_charts(argv: list[str]) -> int:
         webbrowser.open(ch.path.resolve().as_uri())
         return 0
 
-    if sub not in ("list", "ls", "show"):
+    if sub in ("regenerate", "regen", "rerun", "r", "replay"):
+        if len(argv) < 2 or not argv[1].isdigit():
+            raise SystemExit("Usage: alpp history charts regenerate N")
+        n = int(argv[1])
+        if not charts or n < 1 or n > len(charts):
+            raise SystemExit(f"No chart #{n} (have {len(charts)})")
+        seed = _seed_from_chart(charts[n - 1], open_only=False)
+        console.print(f"  [dim]regenerate[/]  {seed.from_label}")
+        return _run_seeded_session(seed, profile=None)
+
+    if sub not in ("list", "ls", "show", ""):
         console.print(f"[red]Unknown charts subcommand:[/] {sub}")
         return 2
 
     _print_saved_charts_section(charts, limit=25)
     if charts:
         console.print(
-            "  [dim]tip[/]  [bold]alpp charts open 1[/]  ·  "
-            "interactive: [bold]s1[/] open · [bold]r1[/] re-run from labels"
+            "  [dim]tip[/]  [bold]alpp history charts open 1[/]  ·  "
+            "[bold]alpp history charts regenerate 1[/]"
         )
     return 0
+
+
+def cmd_charts(argv: list[str]) -> int:
+    """Alias: alpp charts → alpp history charts."""
+    return cmd_history(["charts", *argv])
+
+
+def _run_seeded_session(seed: SessionSeed, *, profile: str | None) -> int:
+    """Continue into the normal chart pipeline with a SessionSeed prefill."""
+    if seed.open_html is not None:
+        webbrowser.open(seed.open_html.resolve().as_uri())
+        return 0
+    if not seed.symbol:
+        console.print("[red]No ticker on that history entry[/]")
+        return 1
+    # regenerate path: write HTML with same style by default
+    return run_chart_session(
+        ticker=seed.symbol,
+        timeframe=seed.timeframe,
+        compare=seed.compare,
+        indicator_raw=None,
+        seed=seed,
+        profile=profile,
+        interactive=True,
+        yes=False,
+        quiet=False,
+        html="AUTO",
+        chart_arg=seed.chart_style,
+        change_arg=seed.change_display,
+        open_html=False,
+        refresh_symbols=False,
+        setup_auth=True,
+    )
 
 
 def _print_status(st: dict) -> None:
@@ -652,115 +877,66 @@ def _print_status_from_catalog(cat: dict) -> None:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
+def run_chart_session(
+    *,
+    ticker: str,
+    timeframe: str | None = None,
+    compare: str | None = None,
+    indicator_raw: str | None = None,
+    seed: SessionSeed | None = None,
+    profile: str | None = None,
+    interactive: bool = False,
+    yes: bool = False,
+    quiet: bool = False,
+    html: str | None = None,
+    chart_arg: str | None = None,
+    change_arg: str | None = None,
+    open_html: bool = False,
+    refresh_symbols: bool = False,
+    setup_auth: bool = True,
+    index: SymbolIndex | None = None,
+) -> int:
+    """Core chart pipeline (CLI args or history seed)."""
+    seed = seed or SessionSeed()
 
-    # Subcommands
-    if argv and argv[0] in ("auth", "login", "credentials", "creds"):
-        return cmd_auth(argv[1:])
+    if setup_auth:
+        creds = ensure_credentials(profile=profile, console=console)
+        set_active_credentials(creds)
+        if creds.backend != "environment":
+            mode = "paper" if creds.paper else "live"
+            console.print(
+                f"  [dim]auth[/]  {creds.profile} ({mode})  "
+                f"[dim]· {creds.backend}[/]"
+            )
 
-    if argv and argv[0] in ("symbols", "symbol", "tickers", "sym"):
-        return cmd_symbols(argv[1:])
+    if index is None:
+        if interactive or refresh_symbols:
+            with console.status(
+                "[cyan]Loading symbol directory…[/]", spinner="dots"
+            ):
+                index = _load_index(force_refresh=refresh_symbols)
+        else:
+            index = SymbolIndex.load()
 
-    if argv and argv[0] in ("history", "hist", "recent"):
-        return cmd_history(argv[1:])
-
-    if argv and argv[0] in ("charts", "chart", "gallery", "html"):
-        return cmd_charts(argv[1:])
-
-    args = build_parser().parse_args(argv)
-    print_banner()
-
-    seed = SessionSeed()
-    # interactive = no ticker CLI arg (still true after history pick for TF/inds)
-    interactive = args.ticker is None
-    force = args.refresh_symbols
-    runs: list[HistoryRun] = []
-    charts: list[ChartInfo] = []
-
-    # Opening a saved chart only needs no API keys
-    if interactive and sys.stdin.isatty():
-        runs = list_runs(limit=10)
-        charts = scan_chart_dirs(limit=12)
-
-    creds = ensure_credentials(profile=args.profile, console=console)
-    set_active_credentials(creds)
-    if creds.backend != "environment":
-        mode = "paper" if creds.paper else "live"
-        console.print(
-            f"  [dim]auth[/]  {creds.profile} ({mode})  "
-            f"[dim]· {creds.backend}[/]"
-        )
-
-    if interactive or force:
-        with console.status("[cyan]Loading symbol directory…[/]", spinner="dots"):
-            index = _load_index(force_refresh=force)
-    else:
-        index = SymbolIndex.load()
-
-    if index:
+    if index and setup_auth:
         age = ""
         st = catalog_status()
         if st.get("updated_at"):
             age = f"  ·  updated {st['updated_at']}"
         console.print(f"  [dim]directory[/]  {index.count:,} symbols{age}")
 
-    if interactive and sys.stdin.isatty():
-        console.print()
-        _print_recent_section(runs, limit=8)
-        console.print()
-        _print_saved_charts_section(charts, limit=10)
-        console.print()
-        recent = recent_tickers(limit=8)
-        if recent:
-            console.print(
-                f"  [dim]tickers[/]  {', '.join(f'[bold]{t}[/]' for t in recent)}"
-            )
-            console.print()
-
-        picked = _prompt_ticker(index, runs=runs, charts=charts)
-        if isinstance(picked, SessionSeed):
-            seed = picked
-            if seed.open_html is not None:
-                console.print(f"  [bold]open[/]  {seed.from_label}")
-                console.print(f"  [dim]file[/]  {seed.open_html}")
-                webbrowser.open(seed.open_html.resolve().as_uri())
-                return 0
-            if seed.from_label:
-                console.print(f"  [dim]replay[/]  {seed.from_label}")
-            if not seed.symbol:
-                raise SystemExit("Could not read ticker from that entry")
-            args.ticker = seed.symbol
-        else:
-            args.ticker = picked
-    elif args.ticker is None:
-        ticker_raw = _prompt_ticker(index, runs=runs, charts=charts)
-        if isinstance(ticker_raw, SessionSeed):
-            seed = ticker_raw
-            if seed.open_html is not None:
-                webbrowser.open(seed.open_html.resolve().as_uri())
-                return 0
-            args.ticker = seed.symbol or ""
-        else:
-            args.ticker = ticker_raw
-        if not args.ticker:
-            raise SystemExit("Ticker required")
-
-    asset = confirm_asset(args.ticker, role="ticker", auto_yes=args.yes, index=index)
+    asset = confirm_asset(ticker, role="ticker", auto_yes=yes, index=index)
 
     compare_asset: AssetInfo | None = None
-    compare_raw = args.compare or seed.compare
-    if interactive and not args.compare and sys.stdin.isatty():
+    compare_raw = compare or seed.compare
+    if interactive and not compare and sys.stdin.isatty():
         console.print()
         default_vs = bool(seed.compare)
-        prompt = (
-            f"Compare vs another ticker?"
-            + (f" [last: {seed.compare}]" if seed.compare else "")
+        prompt = "Compare vs another ticker?" + (
+            f" [last: {seed.compare}]" if seed.compare else ""
         )
         if Confirm.ask(prompt, default=default_vs):
-            if seed.compare and Confirm.ask(
-                f"Use {seed.compare}?", default=True
-            ):
+            if seed.compare and Confirm.ask(f"Use {seed.compare}?", default=True):
                 compare_raw = seed.compare
             else:
                 compare_raw = prompt_ticker_live(index, message="Compare vs") or None
@@ -770,7 +946,7 @@ def main(argv: list[str] | None = None) -> int:
             compare_raw = None
     if compare_raw:
         compare_asset = confirm_asset(
-            compare_raw, role="compare", auto_yes=args.yes, index=index
+            compare_raw, role="compare", auto_yes=yes, index=index
         )
         if compare_asset.symbol == asset.symbol:
             raise SystemExit("Comparison symbol must differ from ticker")
@@ -778,16 +954,12 @@ def main(argv: list[str] | None = None) -> int:
             f"  [dim]compare[/]  [bold]{compare_asset.symbol}[/]  —  {compare_asset.name}"
         )
 
-    tf_raw = args.timeframe or seed.timeframe
+    tf_raw = timeframe or seed.timeframe
     if not tf_raw:
-        if sys.stdin.isatty():
-            tf_raw = _prompt_timeframe("ytd")
-        else:
-            tf_raw = "ytd"
-    elif args.timeframe is None and seed.timeframe and interactive and sys.stdin.isatty():
-        # offer seed default in picker
+        tf_raw = _prompt_timeframe("ytd") if sys.stdin.isatty() else "ytd"
+    elif timeframe is None and seed.timeframe and interactive and sys.stdin.isatty():
         tf_raw = _prompt_timeframe(seed.timeframe)
-    elif args.timeframe is None and seed.timeframe:
+    elif timeframe is None and seed.timeframe:
         tf_raw = seed.timeframe
 
     rng = resolve_range(tf_raw)
@@ -795,13 +967,13 @@ def main(argv: list[str] | None = None) -> int:
         f"  [dim]range[/]  [bold]{rng.label.upper()}[/]  →  {rng.bar}  ({rng.description})"
     )
 
-    if args.indicator is not None:
-        indicators = parse_indicators(args.indicator)
+    if indicator_raw is not None:
+        indicators = parse_indicators(indicator_raw)
     elif seed.indicators and not interactive:
         indicators = list(seed.indicators)
     elif interactive and sys.stdin.isatty():
         console.print()
-        prior = seed.indicators or []
+        prior = list(seed.indicators) if seed.indicators else []
         if not prior:
             prior_keys = last_indicators_for(asset.symbol)
             if prior_keys:
@@ -854,7 +1026,7 @@ def main(argv: list[str] | None = None) -> int:
             rel = normalize_compare(df, compare_df)
             compare_context = fetch_market_context(compare_asset.symbol)
 
-    if not args.quiet:
+    if not quiet:
         print_cli(
             asset,
             rng,
@@ -867,8 +1039,7 @@ def main(argv: list[str] | None = None) -> int:
             compare_context=compare_context,
         )
 
-    # HTML decision after the performance / profile tables
-    html_opt = args.html
+    html_opt = html
     if interactive and html_opt is None and sys.stdin.isatty():
         if Confirm.ask("Write HTML chart?", default=False):
             html_opt = "AUTO"
@@ -877,36 +1048,33 @@ def main(argv: list[str] | None = None) -> int:
     change_display = "both"
     written: Path | None = None
     if html_opt is not None:
-        if args.chart:
-            chart_style = normalize_chart(args.chart)
-        elif seed.chart_style and (args.yes or not sys.stdin.isatty()):
+        if chart_arg:
+            chart_style = normalize_chart(chart_arg)
+        elif seed.chart_style and (yes or not sys.stdin.isatty()):
             chart_style = normalize_chart(seed.chart_style)
-        elif sys.stdin.isatty() and not args.yes:
+        elif sys.stdin.isatty() and not yes:
             console.print()
             default_style = seed.chart_style or DEFAULT_CHART
             chart_style = prompt_chart_style(default_style, console=console)
             console.print(f"  [dim]chart[/]  [bold]{chart_style}[/]")
-        elif args.chart is None and args.yes:
+        elif chart_arg is None and yes:
             chart_style = (
                 normalize_chart(seed.chart_style)
                 if seed.chart_style
                 else DEFAULT_CHART
             )
 
-        if args.change_display:
-            change_display = _normalize_change_display(args.change_display)
-        elif seed.change_display and (args.yes or not sys.stdin.isatty()):
+        if change_arg:
+            change_display = _normalize_change_display(change_arg)
+        elif seed.change_display and (yes or not sys.stdin.isatty()):
             change_display = _normalize_change_display(seed.change_display)
-        elif sys.stdin.isatty() and not args.yes:
+        elif sys.stdin.isatty() and not yes:
             console.print()
-            change_display = _prompt_change_display(
-                seed.change_display or "both"
-            )
+            change_display = _prompt_change_display(seed.change_display or "both")
             console.print(f"  [dim]change[/]  [bold]{change_display}[/]")
         else:
             change_display = "both"
 
-    if html_opt is not None:
         path = (
             default_html_path(asset.symbol, rng.label)
             if html_opt == "AUTO"
@@ -934,10 +1102,11 @@ def main(argv: list[str] | None = None) -> int:
             f"  [bold]html[/]     [link=file://{written.resolve()}]{written}[/]  "
             f"[dim]({chart_style} · {change_display})[/]"
         )
-        if args.open or (interactive and Confirm.ask("Open in browser?", default=True)):
+        if open_html or (
+            interactive and Confirm.ask("Open in browser?", default=True)
+        ):
             webbrowser.open(written.resolve().as_uri())
 
-    # Remember this session (tickers + overlays) for next launch
     try:
         record_run(
             symbol=asset.symbol,
@@ -952,6 +1121,118 @@ def main(argv: list[str] | None = None) -> int:
         console.print(f"[dim]history not saved: {exc}[/]")
 
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry — Ctrl+C / Ctrl+D exit cleanly (no traceback)."""
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        console.print("\n  [dim]interrupted[/]")
+        return 130
+    except EOFError:
+        console.print("\n  [dim]bye[/]")
+        return 0
+
+
+def _main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    # Subcommands
+    if argv and argv[0] in ("auth", "login", "credentials", "creds"):
+        return cmd_auth(argv[1:])
+
+    if argv and argv[0] in ("symbols", "symbol", "tickers", "sym"):
+        return cmd_symbols(argv[1:])
+
+    if argv and argv[0] in ("history", "hist", "recent"):
+        return cmd_history(argv[1:])
+
+    if argv and argv[0] in ("charts", "chart", "gallery", "html"):
+        return cmd_charts(argv[1:])
+
+    args = build_parser().parse_args(argv)
+    print_banner()
+    seed = SessionSeed()
+    interactive = args.ticker is None
+    force = args.refresh_symbols
+
+    creds = ensure_credentials(profile=args.profile, console=console)
+    set_active_credentials(creds)
+    if creds.backend != "environment":
+        mode = "paper" if creds.paper else "live"
+        console.print(
+            f"  [dim]auth[/]  {creds.profile} ({mode})  "
+            f"[dim]· {creds.backend}[/]"
+        )
+
+    if interactive or force:
+        with console.status("[cyan]Loading symbol directory…[/]", spinner="dots"):
+            index = _load_index(force_refresh=force)
+    else:
+        index = SymbolIndex.load()
+
+    if index:
+        age = ""
+        st = catalog_status()
+        if st.get("updated_at"):
+            age = f"  ·  updated {st['updated_at']}"
+        console.print(f"  [dim]directory[/]  {index.count:,} symbols{age}")
+
+    # Simple rich UI: ticker ajax (or type "history" → tickers | charts)
+    if args.ticker is None:
+        picked = _prompt_ticker(index)
+        if isinstance(picked, SessionSeed):
+            seed = picked
+            if seed.open_html is not None:
+                console.print(f"  [bold]open[/]  {seed.from_label}")
+                console.print(f"  [dim]file[/]  {seed.open_html}")
+                webbrowser.open(seed.open_html.resolve().as_uri())
+                return 0
+            if not seed.symbol:
+                raise SystemExit("Could not read ticker from that entry")
+            ticker = seed.symbol
+            # regenerate from history › charts: refresh HTML with live data
+            return run_chart_session(
+                ticker=ticker,
+                timeframe=seed.timeframe or args.timeframe,
+                compare=seed.compare or args.compare,
+                indicator_raw=args.indicator,
+                seed=seed,
+                profile=args.profile,
+                interactive=True,
+                yes=args.yes,
+                quiet=args.quiet,
+                html="AUTO",
+                chart_arg=seed.chart_style or args.chart,
+                change_arg=seed.change_display or args.change_display,
+                open_html=args.open,
+                refresh_symbols=False,
+                setup_auth=False,
+                index=index,
+            )
+        ticker = picked
+    else:
+        ticker = args.ticker
+
+    return run_chart_session(
+        ticker=ticker,
+        timeframe=args.timeframe,
+        compare=args.compare,
+        indicator_raw=args.indicator,
+        seed=seed,
+        profile=args.profile,
+        interactive=interactive,
+        yes=args.yes,
+        quiet=args.quiet,
+        html=args.html,
+        chart_arg=args.chart,
+        change_arg=args.change_display,
+        open_html=args.open,
+        refresh_symbols=False,
+        setup_auth=False,
+        index=index,
+    )
 
 
 if __name__ == "__main__":

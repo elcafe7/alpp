@@ -346,13 +346,16 @@ class SymbolIndex:
 
 
 def make_completer(index: SymbolIndex):
-    """prompt_toolkit completer: live suggestions while typing."""
+    """prompt_toolkit completer: live symbol suggestions while typing."""
     from prompt_toolkit.completion import Completer, Completion
 
     class TickerCompleter(Completer):
         def get_completions(self, document, complete_event):
             text = document.text_before_cursor.strip()
             if not text:
+                return
+            # history is a command, not a ticker — routes shown by command completer
+            if "history".startswith(text.lower()) or text.lower().startswith("history"):
                 return
             for row in index.search(text, limit=20):
                 sym = row["symbol"]
@@ -370,18 +373,110 @@ def make_completer(index: SymbolIndex):
     return TickerCompleter()
 
 
+def make_command_completer(index: SymbolIndex | None):
+    """
+    Main interactive prompt completer:
+      · type a symbol/name → ajax directory hits
+      · type history…     → history › tickers | history › charts
+    """
+    from prompt_toolkit.completion import Completer, Completion, merge_completers
+
+    class HistoryCmdCompleter(Completer):
+        ROUTES = (
+            ("history › tickers", "prior sessions · re-run overlays"),
+            ("history › charts", "saved HTML · open existing or regenerate"),
+        )
+
+        def get_completions(self, document, complete_event):
+            raw = document.text_before_cursor
+            text = raw.strip().lower()
+            start = -len(raw) if raw else 0
+            if not text:
+                return
+            # match "h", "hist", "history", "history ›", "history c"…
+            if not (
+                "history".startswith(text)
+                or text.startswith("history")
+                or text.startswith("hist")
+            ):
+                return
+            # word after "history" filters routes (t→tickers, c→charts)
+            tail = ""
+            if text.startswith("history"):
+                tail = text[len("history") :].strip().lstrip("›>").strip()
+            for value, meta in self.ROUTES:
+                route_word = value.split("›")[-1].strip().lower()  # tickers | charts
+                if tail and not route_word.startswith(tail):
+                    continue
+                yield Completion(
+                    value,
+                    start_position=start,
+                    display=value,
+                    display_meta=meta,
+                )
+
+    parts = [HistoryCmdCompleter()]
+    if index is not None:
+        parts.append(make_completer(index))
+    return merge_completers(parts)
+
+
+def make_list_completer(
+    items: list[tuple[str, str]],
+    *,
+    prefix: str = "",
+) -> object:
+    """
+    Ajax list completer: items are (completion_text, display_meta).
+    Filters as the user types.
+    """
+    from prompt_toolkit.completion import Completer, Completion
+
+    class ListCompleter(Completer):
+        def get_completions(self, document, complete_event):
+            raw = document.text_before_cursor
+            text = raw.strip().lower()
+            start = -len(raw) if raw else 0
+            for value, meta in items:
+                vlow = value.lower()
+                mlow = (meta or "").lower()
+                if not text:
+                    ok = True
+                elif text.isdigit():
+                    head = value.lstrip("#").split()[0] if value else ""
+                    ok = head == text or head.startswith(text)
+                else:
+                    # prefer prefix on the value (existing / regenerate / labels)
+                    ok = (
+                        vlow.startswith(text)
+                        or any(w.startswith(text) for w in vlow.split())
+                        or (len(text) >= 3 and text in vlow)
+                        or (len(text) >= 3 and text in mlow)
+                    )
+                if ok:
+                    yield Completion(
+                        value,
+                        start_position=start,
+                        display=value[:48],
+                        display_meta=(meta or "")[:60],
+                    )
+
+    return ListCompleter()
+
+
 def prompt_ticker_live(
     index: SymbolIndex | None,
     *,
     message: str = "Ticker",
     default: str = "",
     hint: str | None = None,
+    completer=None,
 ) -> str:
     """
     Interactive ticker entry with ajax-style completions while typing.
     Falls back to plain input if prompt_toolkit unavailable or no index.
     """
-    if index is None:
+    if index is None and completer is None:
         from rich.prompt import Prompt
 
         return Prompt.ask(f"[bold cyan]{message}[/]", default=default).strip()
@@ -395,8 +490,9 @@ def prompt_ticker_live(
 
         return Prompt.ask(f"[bold cyan]{message}[/]", default=default).strip()
 
-    completer = make_completer(index)
-    updated = index.updated_at or "unknown"
+    if completer is None:
+        completer = make_completer(index) if index is not None else None
+    updated = (index.updated_at if index else None) or "unknown"
     dim = hint or f"type name or symbol · tab · {updated}"
     # escape for prompt_toolkit HTML
     dim_esc = (
@@ -415,4 +511,3 @@ def prompt_ticker_live(
         default=default,
     )
     return result.strip()
-
