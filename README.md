@@ -11,10 +11,11 @@ Alpaca chart CLI with Rich UI, live ticker autocomplete, and HTML charts.
 
 ### adding a ticker (ajax-style load)
 <img width="780" height="173" alt="Screenshot 2026-07-11 at 12 07 37 PM" src="https://github.com/user-attachments/assets/39c81887-e233-413d-9971-825d54a590fa" />
-     - grabs latest tickers from nasdaq/entire mkt ticker db ( 
+
+     - grabs latest tickers on initial load from:
           - NASDAQ: ftp://ftp.nasdaqtrader.com/symboldirectory/nasdaqlisted.txt
           - NYSE, Arca, etc: ftp://ftp.nasdaqtrader.com/symboldirectory/otherlisted.txt 
-####
+### 
 
 
 ## Install
