@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 import webbrowser
@@ -90,6 +91,7 @@ examples:
   alpp                              # interactive rich UI (ticker complete)
   alpp AAPL ytd
   alpp AAPL ytd --ind sma:20,rsi --vs SPY --html --open
+  alpp AAPL ytd --output-dir /var/www/site/charts
   alpp history tickers
   alpp history charts
   alpp symbols update
@@ -130,7 +132,15 @@ interactive: type a ticker (ajax) or type "history" for:
         nargs="?",
         const="AUTO",
         default=None,
-        help="Write HTML chart (optional path; default ~/alpp/out/)",
+        help="Write HTML chart (file or directory; default ALPP_OUT or ~/alpp/out/)",
+    )
+    p.add_argument(
+        "--output-dir",
+        "--html-dir",
+        dest="output_dir",
+        default=None,
+        metavar="DIR",
+        help="Write HTML chart into DIR (implies --html; suited to a public web folder)",
     )
     p.add_argument(
         "--chart",
@@ -174,9 +184,33 @@ interactive: type a ticker (ajax) or type "history" for:
     return p
 
 
-def default_html_path(symbol: str, tf: str) -> Path:
+def default_html_dir() -> Path:
+    """Default chart export directory, overridable for static publishing."""
+    configured = os.environ.get("ALPP_OUT", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / "alpp" / "out"
+
+
+def default_html_path(symbol: str, tf: str, *, output_dir: Path | None = None) -> Path:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return Path.home() / "alpp" / "out" / f"{symbol.upper()}_{tf}_{stamp}.html"
+    directory = output_dir.expanduser() if output_dir else default_html_dir()
+    return directory / f"{symbol.upper()}_{tf}_{stamp}.html"
+
+
+def resolve_html_path(option: str, symbol: str, tf: str) -> Path:
+    """Resolve an HTML file target, accepting a directory as a convenience."""
+    target = Path(option).expanduser()
+    # Existing dirs, an explicit trailing slash, and paths without an HTML suffix
+    # are directories. This makes `--html /var/www/site/charts` do what users
+    # expect, even before that directory has been created.
+    if (
+        option.endswith(("/", "\\"))
+        or target.is_dir()
+        or target.suffix.lower() not in (".html", ".htm")
+    ):
+        return default_html_path(symbol, tf, output_dir=target)
+    return target
 
 
 def _load_index(force_refresh: bool = False) -> SymbolIndex | None:
@@ -1084,7 +1118,7 @@ def run_chart_session(
         path = (
             default_html_path(asset.symbol, rng.label)
             if html_opt == "AUTO"
-            else Path(html_opt)
+            else resolve_html_path(html_opt, asset.symbol, rng.label)
         )
         with console.status(
             f"[cyan]Rendering HTML ({chart_style}, {change_display})…[/]",
@@ -1158,6 +1192,10 @@ def _main(argv: list[str] | None = None) -> int:
         return cmd_charts(argv[1:])
 
     args = build_parser().parse_args(argv)
+    if args.output_dir:
+        if args.html not in (None, "AUTO"):
+            build_parser().error("--output-dir cannot be combined with an explicit --html path")
+        args.html = args.output_dir
     print_banner()
     seed = SessionSeed()
     interactive = args.ticker is None

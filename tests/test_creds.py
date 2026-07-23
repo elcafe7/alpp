@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from alpp import creds
+from alpp import cli
 
 
 class CredentialResolutionTests(unittest.TestCase):
@@ -43,3 +44,17 @@ class CredentialResolutionTests(unittest.TestCase):
                 creds.login_interactive(api_key="PKTEST", secret_key="secret")
 
         self.assertIn("No usable system keyring backend", str(raised.exception))
+
+    def test_configured_output_directory_controls_default_html(self) -> None:
+        with patch.dict(os.environ, {"ALPP_OUT": "/tmp/alpp-public"}, clear=True):
+            path = cli.default_html_path("spy", "ytd")
+
+        self.assertEqual(path.parent, cli.Path("/tmp/alpp-public"))
+        self.assertTrue(path.name.startswith("SPY_ytd_"))
+        self.assertEqual(path.suffix, ".html")
+
+    def test_html_directory_target_gets_a_generated_filename(self) -> None:
+        path = cli.resolve_html_path("/tmp/alpp-public", "spy", "ytd")
+
+        self.assertEqual(path.parent, cli.Path("/tmp/alpp-public"))
+        self.assertTrue(path.name.startswith("SPY_ytd_"))

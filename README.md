@@ -142,6 +142,7 @@ alpp symbols update     # fetch nasdaqlisted + otherlisted → ~/alpp/data/symbo
 alpp symbols status
 alpp                    # interactive rich UI (ticker complete)
 alpp AAPL ytd --ind sma:20,rsi --vs SPY --html --open
+alpp AAPL ytd --output-dir /var/www/example.com/charts
 alpp AAPL ytd -p paper
 alpp history            # same as typing history in interactive
 alpp history tickers
@@ -165,6 +166,29 @@ History lists load only after you enter the command. New HTML embeds `<!-- alpp-
 Symbol cache is a single **JSON** file (not SQL): easy to inspect, ~one weekly refresh,
 prefix search is fine for ~10–15k tickers. Includes `updated_at` plus each source’s
 `file_creation_time` from Nasdaq Trader.
+
+### Publish HTML to a web folder
+
+Set `ALPP_OUT` to make bare `--html` write into a static-site or public-web directory:
+
+```bash
+ALPP_OUT=/var/www/example.com/charts alpp SPY ytd --html
+```
+
+Or select the destination for one chart. The directory is created when the chart is
+written; `--html-dir` is an alias for `--output-dir`.
+
+```bash
+alpp SPY ytd --output-dir /var/www/example.com/charts
+alpp SPY ytd --html /var/www/example.com/charts
+```
+
+The second command treats a path without an `.html`/`.htm` suffix as a directory and
+uses alpp's timestamped filename. To control the exact published filename, provide it:
+
+```bash
+alpp SPY ytd --html /var/www/example.com/charts/market.html
+```
 
 ## Publish checklist (maintainer)
 
