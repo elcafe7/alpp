@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alpp"
-version = "0.3.3"
+version = "0.3.4"
 description = "Alpaca chart CLI with Rich UI and HTML export"
 readme = "README.md"
 license = "MIT"

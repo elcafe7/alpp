@@ -99,6 +99,30 @@ alpp auth logout             # remove saved keys
 
 Legacy plaintext entries in `config.json` are **auto-migrated** to keychain on first use.
 
+### Headless servers / CI
+
+`alpp` never writes new credentials to plaintext config. If the host has no unlocked
+system keyring (common for an SSH-only VPS), use environment variables for that shell
+or process instead:
+
+```bash
+export ALPACA_API_KEY='your-key-id'
+export ALPACA_SECRET_KEY='your-secret'
+alpp AAPL ytd
+```
+
+For a protected environment file, load it only for the command; do not commit it:
+
+```bash
+set -a
+source /secure/path/alpaca.env
+set +a
+alpp AAPL ytd
+```
+
+`alpp auth status` reports this as an environment override. To use `alpp auth login`
+or `alpp auth import-alpaca`, first provide a usable OS keyring backend.
+
 If paper credentials are missing but live exists, `alpp` **prompts** before switching —
 it never auto-selects live.
 

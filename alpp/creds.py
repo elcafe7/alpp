@@ -85,21 +85,30 @@ def _keyring_module():
 
 
 def keyring_available() -> bool:
+    """Return whether keyring has a backend that can actually store secrets.
+
+    ``keyring.get_keyring()`` succeeds even when it selects its fail backend,
+    which otherwise turns a harmless ``auth status`` into a traceback on
+    headless Linux hosts.
+    """
     kr = _keyring_module()
     if kr is None:
         return False
     try:
-        kr.get_keyring()
-        return True
+        backend = kr.get_keyring()
+        return float(backend.priority) > 0
     except Exception:
         return False
 
 
 def _keyring_get(profile: str) -> tuple[str, str, bool] | None:
     kr = _keyring_module()
-    if kr is None:
+    if kr is None or not keyring_available():
         return None
-    raw = kr.get_password(KEYRING_SERVICE, profile)
+    try:
+        raw = kr.get_password(KEYRING_SERVICE, profile)
+    except Exception:
+        return None
     if not raw:
         return None
     try:
@@ -116,15 +125,30 @@ def _keyring_get(profile: str) -> tuple[str, str, bool] | None:
 
 def _keyring_set(profile: str, api_key: str, secret_key: str, *, live_trade: bool) -> None:
     kr = _keyring_module()
-    if kr is None:
+    if kr is None or not keyring_available():
         raise SystemExit(
-            "keyring is not available. Install with: pip install keyring\n"
-            "Or set ALPACA_API_KEY + ALPACA_SECRET_KEY in the environment."
+            _keyring_unavailable_message()
         )
     payload = json.dumps(
         {"api_key": api_key, "secret_key": secret_key, "live_trade": live_trade}
     )
-    kr.set_password(KEYRING_SERVICE, profile, payload)
+    try:
+        kr.set_password(KEYRING_SERVICE, profile, payload)
+    except Exception as exc:
+        raise SystemExit(_keyring_unavailable_message()) from exc
+
+
+def _keyring_unavailable_message() -> str:
+    return (
+        "No usable system keyring backend is available.\n\n"
+        "On a headless host, keep credentials out of alpp's config and set them "
+        "for the command instead:\n"
+        "  export ALPACA_API_KEY='your-key'\n"
+        "  export ALPACA_SECRET_KEY='your-secret'\n"
+        "  alpp AAPL ytd\n\n"
+        "To save a persistent alpp profile, install and unlock a system keyring "
+        "backend, then rerun `alpp auth login`."
+    )
 
 
 def _keyring_delete(profile: str) -> None:
@@ -438,16 +462,12 @@ def _store_profile(
     live_trade: bool,
     data: dict[str, Any],
 ) -> None:
-    if keyring_available():
-        _keyring_set(profile, api_key, secret_key, live_trade=live_trade)
-        backend = "keychain"
-    else:
-        backend = "plaintext"
+    if not keyring_available():
+        raise SystemExit(_keyring_unavailable_message())
+    _keyring_set(profile, api_key, secret_key, live_trade=live_trade)
+    backend = "keychain"
     profiles = dict(data.get("profiles") or {})
     entry: dict[str, Any] = {"backend": backend, "live_trade": live_trade}
-    if backend == "plaintext":
-        entry["api_key"] = api_key
-        entry["secret_key"] = secret_key
     profiles[profile] = entry
     data["version"] = 2
     data["profiles"] = profiles
@@ -462,6 +482,8 @@ def login_interactive(
 ) -> Path:
     console = console or Console()
     profile = profile.strip() or "paper"
+    if not keyring_available():
+        raise SystemExit(_keyring_unavailable_message())
     live_trade = profile == "live"
     if live_trade:
         _confirm_live(console)
@@ -489,6 +511,8 @@ def login_interactive(
 def import_alpaca_profiles(*, console: Console | None = None) -> int:
     """One-time import from ~/.config/alpaca/profiles/{paper,live}.yaml into keychain."""
     console = console or Console()
+    if not keyring_available():
+        raise SystemExit(_keyring_unavailable_message())
     if not ALPACA_PROFILES_DIR.is_dir():
         raise SystemExit(f"No Alpaca CLI profiles at {ALPACA_PROFILES_DIR}")
 
@@ -660,7 +684,10 @@ def print_status(*, console: Console | None = None) -> int:
     if not report.get("config_exists"):
         cfg = f"{cfg} [dim](not created yet)[/]"
     tbl.add_row("config", cfg)
-    tbl.add_row("keyring", "available" if report["keyring"] else "[yellow]not installed[/]")
+    tbl.add_row(
+        "keyring",
+        "available" if report["keyring"] else "[yellow]no usable backend[/]",
+    )
     tbl.add_row("default", report["default_profile"])
     if report["env_override"]:
         tbl.add_row("override", "[yellow]environment variables[/]")
@@ -696,5 +723,13 @@ def print_status(*, console: Console | None = None) -> int:
             "Run: [bold]alpp auth import-alpaca[/]"
         )
     elif not profiles:
-        console.print("[yellow]No saved profiles.[/] Run: [bold]alpp auth login[/]")
+        if report["env_override"]:
+            console.print("[green]Using environment credentials for this process.[/]")
+        elif report["keyring"]:
+            console.print("[yellow]No saved profiles.[/] Run: [bold]alpp auth login[/]")
+        else:
+            console.print(
+                "[yellow]No saved profiles.[/] On this host, use "
+                "[bold]ALPACA_API_KEY[/] + [bold]ALPACA_SECRET_KEY[/] in the environment."
+            )
     return 0 if active else 1
